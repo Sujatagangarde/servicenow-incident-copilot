@@ -15,6 +15,7 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     EMBED_MODEL: str = os.getenv("EMBED_MODEL", "gemini-embedding-001")
     EMBED_DIM: int = int(os.getenv("EMBED_DIM", "768"))
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 
     # Postgres + pgvector (matches docker-compose.yml)
     DATABASE_URL: str = os.getenv(

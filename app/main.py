@@ -6,12 +6,14 @@ Docs: http://127.0.0.1:8000/docs
 import psycopg
 import requests
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
+from app.copilot_graph import analyze_incident
 from app.db import count_documents, search_similar
 from app.embeddings import embed_query
 from app.servicenow_client import ServiceNowClient
 
-app = FastAPI(title="ServiceNow Incident Copilot", version="0.2.0")
+app = FastAPI(title="ServiceNow Incident Copilot", version="0.3.0")
 sn = ServiceNowClient()
 
 
@@ -69,6 +71,41 @@ def search(q: str = Query(..., min_length=3, description="Describe the problem i
         raise HTTPException(status_code=500, detail=str(e))
     except psycopg.OperationalError:
         raise HTTPException(status_code=503, detail="Cannot reach Postgres. Is Docker running? (docker compose up -d)")
+
+
+# ---------- Phase 3: the Copilot (LangGraph + LLM) ----------
+
+class AnalyzeRequest(BaseModel):
+    short_description: str = Field(..., min_length=5, examples=["VPN keeps disconnecting every few minutes"])
+    description: str = Field("", examples=["Working from home, AnyConnect drops and I have to reconnect."])
+
+
+def _run_copilot(short_description: str, description: str) -> dict:
+    try:
+        return analyze_incident(short_description, description)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except psycopg.OperationalError:
+        raise HTTPException(status_code=503, detail="Cannot reach Postgres. Check DATABASE_URL in .env")
+    except Exception as e:  # LLM/API errors (rate limit, bad key, model name...)
+        raise HTTPException(status_code=502, detail=f"Copilot failed: {e.__class__.__name__}: {e}")
+
+
+@app.post("/copilot/analyze")
+def copilot_analyze(req: AnalyzeRequest):
+    """Analyze any incident text: classify it and suggest a fix based on similar past cases."""
+    return _run_copilot(req.short_description, req.description)
+
+
+@app.get("/copilot/incident/{number}")
+def copilot_for_incident(number: str):
+    """Fetch a real incident from ServiceNow and run the Copilot on it."""
+    incident = _call(sn.get_incident, number)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {number} not found")
+    analysis = _run_copilot(incident["short_description"], incident.get("description") or "")
+    return {"incident": {"number": incident["number"], "short_description": incident["short_description"]},
+            **analysis}
 
 
 @app.get("/stats")
